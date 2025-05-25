@@ -3,14 +3,20 @@ Configuration settings for InterPrep-AI Next Generation.
 """
 import os
 from datetime import timedelta
+from pathlib import Path
+
+# Absolute path to project root
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+DB_PATH = BASE_DIR / "interprep.db"
 
 class Config:
     """Base configuration."""
+    
     # Flask settings
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-please-change-in-production')
     
-    # Database settings
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', 'sqlite:///interprep.db')
+    # Database settings - Use absolute path to SQLite DB
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', f"sqlite:///{DB_PATH}")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
     # JWT settings
@@ -48,7 +54,7 @@ class ProductionConfig(Config):
     # In production, ensure these are set in environment variables
     SECRET_KEY = os.environ.get('SECRET_KEY')
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY')
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', f"sqlite:///{DB_PATH}")
     
     # Production CORS settings
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '').split(',')

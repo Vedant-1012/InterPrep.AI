@@ -2,6 +2,11 @@
 Application entry point for InterPrep-AI Next Generation.
 """
 import os
+from dotenv import load_dotenv
+
+# Load .env before anything else
+load_dotenv()
+
 from app import create_app
 from app.extensions import db
 from flask_migrate import Migrate

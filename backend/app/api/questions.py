@@ -6,9 +6,10 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 import numpy as np
 
 # from . import questions_bp
+from ..services.retriever import filter_questions
 from ..models import Question, Favorite, PracticeHistory
 from ..extensions import db
-from ..ai.gemini import generate_question, generate_similar_question
+from ..ai.gemini import generate_question, generate_similar_question, rag_enhanced_question_generation
 from ..ai.embeddings import embed_text
 from ..ai.search import search_similar_questions
 
@@ -111,22 +112,22 @@ def create_question():
         return jsonify({'message': 'Missing required fields'}), 400
     
     try:
-        # Generate question using AI
+        # Generate question using AI with RAG
         topic = data['topic']
         difficulty = data['difficulty']
         company = data.get('company')
         
-        # Call AI service to generate question
+        # Call AI service to generate question with RAG enhancement
         question_data = generate_question(topic, difficulty, company)
         
-        # Create question in database
+        # Create question in database - remove source_type parameter
         question = Question(
             title=question_data['title'],
-            content=question_data['content'],
+            content=question_data.get('content', question_data.get('description', '')),
             difficulty=difficulty,
             topic=topic,
-            company=company,
-            source_type='generated'
+            company=company
+            # Remove source_type parameter
         )
         
         # Generate and store embedding
@@ -143,44 +144,78 @@ def create_question():
         db.session.rollback()
         return jsonify({'message': f'Error generating question: {str(e)}'}), 500
 
+
+
 @questions_bp.route('/<int:question_id>/similar', methods=['POST'])
 @jwt_required()
 def generate_similar(question_id):
-    """Generate a similar question."""
-    # Get original question
+    """Generate a similar question using retriever and Gemini RAG."""
+    from ..services.retriever import find_similar_questions
+    from ..ai.gemini import gemini_ai
+
     original_question = Question.query.get(question_id)
     if not original_question:
         return jsonify({'message': 'Question not found'}), 404
-    
+
     try:
-        # Generate similar question using AI
-        question_data = generate_similar_question(
-            original_question.title,
-            original_question.content,
-            original_question.difficulty,
-            original_question.topic
+        # Get similar questions as context
+        similar_questions = find_similar_questions(
+            question_text=f"{original_question.title} {original_question.content}",
+            n=3,
+            topic=original_question.topic,
+            difficulty=original_question.difficulty,
+            company=original_question.company
         )
-        
-        # Create question in database
+
+        # Format context
+        context = "Here are similar questions:\n"
+        for i, q in enumerate(similar_questions):
+            context += f"{i+1}. {q['Title']}\n{q['Content']}\n\n"
+
+        # Gemini prompt
+        prompt = f"""
+        Based on the context below, generate a new question that is similar in pattern and difficulty but not identical.
+
+        Context:
+        {context}
+
+        Format the response as JSON:
+        {{
+            "title": "...",
+            "description": "...",
+            "examples": [...],
+            "constraints": [...],
+            "difficulty": "{original_question.difficulty}",
+            "topic": "{original_question.topic}",
+            "company": "{original_question.company or 'general'}",
+            "expected_complexity": {{
+                "time": "...",
+                "space": "..."
+            }}
+        }}
+        """
+
+        response_text = gemini_ai.generate_content(prompt)
+        question_data = gemini_ai.extract_json_from_response(response_text)
+
         question = Question(
             title=question_data['title'],
-            content=question_data['content'],
+            content=question_data.get('content', question_data.get('description', '')),
             difficulty=original_question.difficulty,
             topic=original_question.topic,
             company=original_question.company,
             source_type='generated'
         )
-        
-        # Generate and store embedding
+
         embedding = embed_text(question.title + " " + question.content)
         if embedding is not None:
             question.embedding = embedding.tolist()
-        
+
         db.session.add(question)
         db.session.commit()
-        
+
         return jsonify(question.to_dict()), 201
-    
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': f'Error generating similar question: {str(e)}'}), 500
@@ -222,6 +257,19 @@ def add_favorite(question_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': f'Error adding to favorites: {str(e)}'}), 500
+
+@questions_bp.route("/filter", methods=["GET"])
+def get_filtered_questions():
+    topic = request.args.get("topic")
+    difficulty = request.args.get("difficulty")
+    company = request.args.get("company")
+    limit = int(request.args.get("limit", 10))
+    
+    try:
+        results = filter_questions(topic=topic, difficulty=difficulty, company=company, limit=limit)
+        return jsonify(results), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @questions_bp.route('/<int:question_id>/favorite', methods=['DELETE'])
 @jwt_required()
